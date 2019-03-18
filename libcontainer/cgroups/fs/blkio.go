@@ -14,6 +14,10 @@ import (
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
+const (
+	cgroupIOMax       = "io.max"
+)
+
 type BlkioGroup struct {
 }
 
@@ -29,7 +33,51 @@ func (s *BlkioGroup) Apply(d *cgroupData) error {
 	return nil
 }
 
+func (s *BlkioGroup) SetParam(path, v1Str, tag string) error {
+	fields := strings.Split(v1Str," ")
+	if len(fields) == 2 {
+		param := fields[0] + " "+ tag +"=" + fields[1]
+		return writeFile(path, cgroupIOMax, param);
+	}
+	return nil
+}
+
 func (s *BlkioGroup) Set(path string, cgroup *configs.Cgroup) error {
+	if cgroups.CgroupVersion.Blkio.Version == 2 {
+//		debugf("blkio.weight:%v", cgroup.Resources.BlkioWeight)
+//		debugf("blkio.leaf_weight:%v", cgroup.Resources.BlkioLeafWeight)
+//		for _, wd := range cgroup.Resources.BlkioWeightDevice {
+//			debugf("blkio.weight_device:%v", wd.WeightString())
+//			debugf("blkio.leaf_weight_device:%v", wd.LeafWeightString())
+//		}
+		for _, td := range cgroup.Resources.BlkioThrottleReadBpsDevice {
+//			debugf("blkio.throttle.read_bps_device:%v", td.String())
+			if err := s.SetParam(path, td.String(), "rbps"); err != nil {
+				return err
+			}
+		}
+		for _, td := range cgroup.Resources.BlkioThrottleWriteBpsDevice {
+//			debugf("blkio.throttle.write_bps_device:%v", td.String())
+			if err := s.SetParam(path, td.String(), "wbps"); err != nil {
+				return err
+			}
+		}
+		for _, td := range cgroup.Resources.BlkioThrottleReadIOPSDevice {
+//			debugf( "blkio.throttle.read_iops_device%v", td.String())
+			if err := s.SetParam(path, td.String(), "riops"); err != nil {
+				return err
+			}
+		}
+		for _, td := range cgroup.Resources.BlkioThrottleWriteIOPSDevice {
+//			debugf("blkio.throttle.write_iops_device%v", td.String())
+			if err := s.SetParam(path, td.String(), "wiops"); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
 	if cgroup.Resources.BlkioWeight != 0 {
 		if err := writeFile(path, "blkio.weight", strconv.FormatUint(uint64(cgroup.Resources.BlkioWeight), 10)); err != nil {
 			return err

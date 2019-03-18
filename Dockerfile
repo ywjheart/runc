@@ -60,9 +60,9 @@ RUN mkdir -p /usr/src/criu \
 ENV ROOTFS /busybox
 RUN mkdir -p ${ROOTFS}
 
-COPY script/tmpmount /
+#COPY script/tmpmount /
 WORKDIR /go/src/github.com/opencontainers/runc
-ENTRYPOINT ["/tmpmount"]
+#ENTRYPOINT ["/tmpmount"]
 
 ADD . /go/src/github.com/opencontainers/runc
 

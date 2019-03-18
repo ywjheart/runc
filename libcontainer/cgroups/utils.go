@@ -22,6 +22,31 @@ const (
 	CgroupProcesses  = "cgroup.procs"
 )
 
+type CgroupControllerInfo struct {
+	Version int
+}
+
+type CgroupVersionInfo struct {
+	Blkio CgroupControllerInfo
+	Memory CgroupControllerInfo
+}
+
+var CgroupVersion CgroupVersionInfo
+
+func init() {
+	if PathExists("/sys/fs/cgroup/blkio/tasks") {
+		CgroupVersion.Blkio.Version = 1
+	} else {
+		CgroupVersion.Blkio.Version = 2
+	}
+
+	if PathExists("/sys/fs/cgroup/memory/tasks") {
+		CgroupVersion.Memory.Version = 1
+	} else {
+		CgroupVersion.Memory.Version = 2
+	}
+}
+
 // https://www.kernel.org/doc/Documentation/cgroup-v1/cgroups.txt
 func FindCgroupMountpoint(cgroupPath, subsystem string) (string, error) {
 	mnt, _, err := FindCgroupMountpointAndRoot(cgroupPath, subsystem)
@@ -58,6 +83,12 @@ func findCgroupMountpointAndRootFromReader(reader io.Reader, cgroupPath, subsyst
 				if opt == subsystem {
 					return fields[4], fields[3], nil
 				}
+			}
+			// added by yew: try cgroupv2
+			if fields[len(fields) - 3] == "cgroup2" &&
+				((CgroupVersion.Memory.Version == 2 && subsystem == "memory" ) ||
+					(CgroupVersion.Blkio.Version == 2 && subsystem == "blkio")) {
+				return fields[4], fields[3], nil
 			}
 		}
 	}
@@ -121,6 +152,18 @@ func FindCgroupMountpointDir() (string, error) {
 
 			return filepath.Dir(fields[4]), nil
 		}
+
+		// added by yew
+		if (CgroupVersion.Blkio.Version==2 ||
+			CgroupVersion.Memory.Version==2) &&
+			postSeparatorFields[0] == "cgroup2" {
+			// Check that the mount is properly formatted.
+			if numPostFields < 3 {
+				return "", fmt.Errorf("Error found less than 3 fields post '-' in %q", text)
+			}
+
+			return filepath.Dir(fields[4]), nil
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
@@ -153,29 +196,55 @@ func getCgroupMountsHelper(ss map[string]bool, mi io.Reader, all bool) ([]Mount,
 		if sepIdx == -1 {
 			return nil, fmt.Errorf("invalid mountinfo format")
 		}
-		if txt[sepIdx+3:sepIdx+10] == "cgroup2" || txt[sepIdx+3:sepIdx+9] != "cgroup" {
-			continue
-		}
-		fields := strings.Split(txt, " ")
-		m := Mount{
-			Mountpoint: fields[4],
-			Root:       fields[3],
-		}
-		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
-			seen, known := ss[opt]
-			if !known || (!all && seen) {
-				continue
+		if txt[sepIdx+3:sepIdx+9] == "cgroup" {
+			fields := strings.Split(txt, " ")
+			m := Mount{
+				Mountpoint: fields[4],
+				Root:       fields[3],
 			}
-			ss[opt] = true
-			if strings.HasPrefix(opt, CgroupNamePrefix) {
-				opt = opt[len(CgroupNamePrefix):]
+			for _, opt := range strings.Split(fields[len(fields)-1], ",") {
+				seen, known := ss[opt]
+				if !known || (!all && seen) {
+					continue
+				}
+				ss[opt] = true
+				if strings.HasPrefix(opt, CgroupNamePrefix) {
+					opt = opt[len(CgroupNamePrefix):]
+				}
+				m.Subsystems = append(m.Subsystems, opt)
+				numFound++
 			}
-			m.Subsystems = append(m.Subsystems, opt)
-			numFound++
+			if len(m.Subsystems) > 0 || all {
+				res = append(res, m)
+			}
 		}
-		if len(m.Subsystems) > 0 || all {
-			res = append(res, m)
+		// added by yew: extra care for blkio/memory in cgroupv2
+		if txt[sepIdx+3:sepIdx+10] == "cgroup2" {
+			fields := strings.Split(txt, " ")
+			m := Mount{
+				Mountpoint: fields[4],
+				Root:       fields[3],
+			}
+			if CgroupVersion.Blkio.Version==2 {
+				opt := "blkio"
+				ss[opt] = true
+				m.Subsystems = append(m.Subsystems, opt)
+				numFound++
+				if len(m.Subsystems) > 0 || all {
+					res = append(res, m)
+				}
+			}
+			if CgroupVersion.Memory.Version==2 {
+				opt := "memory"
+				ss[opt] = true
+				m.Subsystems = append(m.Subsystems, opt)
+				numFound++
+				if len(m.Subsystems) > 0 || all {
+					res = append(res, m)
+				}
+			}
 		}
+
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -323,7 +392,8 @@ func ParseCgroupFile(path string) (map[string]string, error) {
 func parseCgroupFromReader(r io.Reader) (map[string]string, error) {
 	s := bufio.NewScanner(r)
 	cgroups := make(map[string]string)
-
+	var cgroupv2 string
+	
 	for s.Scan() {
 		text := s.Text()
 		// from cgroups(7):
@@ -336,11 +406,27 @@ func parseCgroupFromReader(r io.Reader) (map[string]string, error) {
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("invalid cgroup entry: must contain at least two colons: %v", text)
 		}
-
+		
 		for _, subs := range strings.Split(parts[1], ",") {
-			cgroups[subs] = parts[2]
+			if subs != "" {
+				cgroups[subs] = parts[2]
+			} else {
+				// store cgroupv2 path temporarily
+				cgroupv2 = parts[2]
+			}
 		}
 	}
+	
+	// added by yew: store controllers of memory/blkio if they are missing
+	_, ok := cgroups["memory"]
+	if !ok {
+		cgroups["memory"] = cgroupv2
+	}
+	_, ok = cgroups["blkio"]
+	if !ok {
+		cgroups["blkio"] = cgroupv2
+	}
+	
 	if err := s.Err(); err != nil {
 		return nil, err
 	}

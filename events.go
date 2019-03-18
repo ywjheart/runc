@@ -197,27 +197,40 @@ information is displayed once every 5 seconds.`,
 				stats <- s
 			}
 		}()
-		n, err := container.NotifyOOM()
-		if err != nil {
-			return err
+		
+		// cgroup v1 supports oom event
+		if cgroups.CgroupVersion.Memory.Version == 1 {
+			n, err := container.NotifyOOM()
+			if err != nil {
+				return err
+			}
+			for {
+				select {
+				case _, ok := <-n:
+					if ok {
+						// this means an oom event was received, if it is !ok then
+						// the channel was closed because the container stopped and
+						// the cgroups no longer exist.
+						events <- &event{Type: "oom", ID: container.ID()}
+					} else {
+						n = nil
+					}
+				case s := <-stats:
+					events <- &event{Type: "stats", ID: container.ID(), Data: convertLibcontainerStats(s)}
+				}
+				if n == nil {
+					close(events)
+					break
+				}
+			}
+			group.Wait()
+			return nil		
 		}
+
 		for {
 			select {
-			case _, ok := <-n:
-				if ok {
-					// this means an oom event was received, if it is !ok then
-					// the channel was closed because the container stopped and
-					// the cgroups no longer exist.
-					events <- &event{Type: "oom", ID: container.ID()}
-				} else {
-					n = nil
-				}
 			case s := <-stats:
 				events <- &event{Type: "stats", ID: container.ID(), Data: convertLibcontainerStats(s)}
-			}
-			if n == nil {
-				close(events)
-				break
 			}
 		}
 		group.Wait()

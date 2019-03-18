@@ -17,6 +17,7 @@ import (
 const (
 	cgroupMemorySwapLimit = "memory.memsw.limit_in_bytes"
 	cgroupMemoryLimit     = "memory.limit_in_bytes"
+	cgroupMemoryMax       = "memory.max"
 )
 
 type MemoryGroup struct {
@@ -115,6 +116,16 @@ func setMemoryAndSwap(path string, cgroup *configs.Cgroup) error {
 }
 
 func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
+	if cgroups.CgroupVersion.Memory.Version == 2 {
+		if cgroup.Resources.Memory != 0 {
+			if err := writeFile(path, cgroupMemoryMax, strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
 	if err := setMemoryAndSwap(path, cgroup); err != nil {
 		return err
 	}

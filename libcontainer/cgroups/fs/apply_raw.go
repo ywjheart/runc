@@ -17,6 +17,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	cgroupSubtreeControl = "cgroup.subtree_control"
+)
+
 var (
 	subsystems = subsystemSet{
 		&CpusetGroup{},
@@ -348,6 +352,36 @@ func (raw *cgroupData) join(subsystem string) (string, error) {
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return "", err
 	}
+
+	// added by yew: update subtree control
+	if	cgroups.CgroupVersion.Memory.Version == 2 ||
+		cgroups.CgroupVersion.Blkio.Version == 2 {
+		if subsystem == "memory" ||
+			subsystem == "blkio" {
+
+			data := ""
+			if	cgroups.CgroupVersion.Memory.Version == 2 {
+				data += " +memory"
+			}
+			if	cgroups.CgroupVersion.Blkio.Version == 2 {
+				data += " +io"
+			}
+
+			var dirs []string
+
+			for dir:= path; len(dir)>/*len("/sys/fs/cgroup")*/14; dir = filepath.Dir(dir) {
+				dirs = append(dirs, dir)
+			}
+
+			for i := len(dirs) -1; i>0 ; i-- {
+				file := filepath.Join(dirs[i],cgroupSubtreeControl)
+				if cgroups.PathExists(file) {
+					writeFile(dirs[i], cgroupSubtreeControl, data)
+				}
+			}
+		}
+	}
+
 	if err := cgroups.WriteCgroupProc(path, raw.pid); err != nil {
 		return "", err
 	}
