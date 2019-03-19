@@ -118,23 +118,19 @@ func setMemoryAndSwap(path string, cgroup *configs.Cgroup) error {
 
 func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 	if cgroups.CgroupVersion.Memory.Version == 2 {
+		val := "max"
 		if cgroup.Resources.Memory != 0 {
-			if err := writeFile(path, cgroupMemoryMax, strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
-				return err
-			}
-		} else {
-			if err := writeFile(path, cgroupMemoryMax, "max"); err != nil {
-				return err
-			}
+			val = strconv.FormatInt(cgroup.Resources.Memory, 10)
 		}
+		if err := writeFile(path, cgroupMemoryMax, val); err != nil {
+			return err
+		}
+		val = "max"
 		if cgroup.Resources.MemoryReservation != 0 {
-			if err := writeFile(path, cgroupMemoryHigh, strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)); err != nil {
-				return err
-			}
-		} else {
-			if err := writeFile(path, cgroupMemoryHigh, "max"); err != nil {
-				return err
-			}
+			val = strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)
+		}
+		if err := writeFile(path, cgroupMemoryHigh, val); err != nil {
+			return err
 		}
 		return nil
 	}
