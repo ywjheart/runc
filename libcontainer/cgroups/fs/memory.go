@@ -18,6 +18,7 @@ const (
 	cgroupMemorySwapLimit = "memory.memsw.limit_in_bytes"
 	cgroupMemoryLimit     = "memory.limit_in_bytes"
 	cgroupMemoryMax       = "memory.max"
+	cgroupMemoryHigh      = "memory.high"
 )
 
 type MemoryGroup struct {
@@ -121,8 +122,20 @@ func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 			if err := writeFile(path, cgroupMemoryMax, strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
 				return err
 			}
+		} else {
+			if err := writeFile(path, cgroupMemoryMax, "max"); err != nil {
+				return err
+			}
 		}
-
+		if cgroup.Resources.MemoryReservation != 0 {
+			if err := writeFile(path, cgroupMemoryHigh, strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)); err != nil {
+				return err
+			}
+		} else {
+			if err := writeFile(path, cgroupMemoryHigh, "max"); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 

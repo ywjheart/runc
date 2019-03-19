@@ -349,6 +349,7 @@ func (raw *cgroupData) join(subsystem string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return "", err
 	}
@@ -376,7 +377,9 @@ func (raw *cgroupData) join(subsystem string) (string, error) {
 			for i := len(dirs) -1; i>0 ; i-- {
 				file := filepath.Join(dirs[i],cgroupSubtreeControl)
 				if cgroups.PathExists(file) {
-					writeFile(dirs[i], cgroupSubtreeControl, data)
+					if err := writeFile(dirs[i], cgroupSubtreeControl, data); err != nil {
+						return "", err
+					}
 				}
 			}
 		}
