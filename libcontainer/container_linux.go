@@ -224,6 +224,56 @@ func (c *linuxContainer) Set(config configs.Config) error {
 			return err
 		}
 	}
+
+	// update DSCP
+	if c.config.Namespaces.Contains(configs.NEWNET) {
+		/*
+			 noted by yew:
+		1. get the parent process pid
+		2. mkdir -p /var/run/netns
+		3. touch /var/run/netns/<pid>
+		4. mount --bind /proc/<pid>/ns/net /var/run/netns/<pid>
+		5. ip netns exec <pid> iptables -t mangle -A OUTPUT -j DSCP --set-descp 0x12
+		6. umount /var/run/netns/<pid>
+		7. rm /var/run/netns/<pid>
+		*/
+		pid := c.initProcess.pid()
+		logrus.Debugf("parent pid : %v", pid)
+		netnsroot := "/var/run/netns"
+		logrus.Debugf("netnsroot:%v", netnsroot)
+		src := fmt.Sprintf("/proc/%v/ns/net", pid)
+		logrus.Debugf("src:%v", src)
+		mp :=  netnsroot + fmt.Sprintf("/%v", pid)
+		err := os.MkdirAll(netnsroot, 0777)
+		if err != nil {
+			logrus.Debugf("mp:%v, MkdirAll err: %v", mp, err.Error())
+		}
+		f,err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
+		if err != nil {
+			return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
+		}
+		f.Close()
+
+		err = syscall.Mount(src,mp,"",syscall.MS_BIND,"")
+		if err != nil {
+			return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
+		}
+
+		// flush before insert, ignore errors here
+		cmd := exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-F")
+		_ = cmd.Run()
+
+		cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", "0x12")
+		logrus.Debugf("path: %v", cmd.Path)
+		logrus.Debugf("arg: %v", cmd.Args)
+		err = cmd.Run()
+		if err != nil {
+			logrus.Debug("cmd.Run returned error: %v", err)
+		}
+		syscall.Unmount(mp, syscall.MNT_DETACH)
+		os.RemoveAll(mp)
+	}
+
 	// After config setting succeed, update config and states
 	c.config = &config
 	_, err = c.updateState(nil)
@@ -344,6 +394,7 @@ func (c *linuxContainer) start(process *Process) error {
 		}
 		return newSystemErrorWithCause(err, "starting container process")
 	}
+
 	// generate a timestamp indicating when the container was started
 	c.created = time.Now().UTC()
 	if process.Init {

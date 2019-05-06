@@ -322,6 +322,8 @@ type LinuxNetwork struct {
 	ClassID *uint32 `json:"classID,omitempty"`
 	// Set priority of network traffic for container
 	Priorities []LinuxInterfacePriority `json:"priorities,omitempty"`
+	// set dscp
+	DSCP *uint32 `json:"dscp,omitempty"`
 }
 
 // LinuxRdma for Linux cgroup 'rdma' resource management (Linux 4.11)

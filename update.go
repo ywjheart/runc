@@ -18,6 +18,7 @@ import (
 func i64Ptr(i int64) *int64   { return &i }
 func u64Ptr(i uint64) *uint64 { return &i }
 func u16Ptr(i uint16) *uint16 { return &i }
+func u32Ptr(i uint32) *uint32 { return &i }
 
 var updateCommand = cli.Command{
 	Name:      "update",
@@ -50,6 +51,9 @@ The accepted format is as follow (unchanged values can be omitted):
   },
   "blockIO": {
     "weight": 0
+  },
+  "network": {
+    "dscp" : 0
   }
 }
 
@@ -122,6 +126,10 @@ other options are ignored.
 			Name:  "mem-bw-schema",
 			Usage: "The string of Intel RDT/MBA memory bandwidth schema",
 		},
+		cli.UintFlag{
+			Name:  "dscp",
+			Usage: "Specifies dscp value, default 0 to disable dscp tagging",
+		},
 	},
 	Action: func(context *cli.Context) error {
 		if err := checkArgs(context, 1, exactArgs); err != nil {
@@ -154,6 +162,9 @@ other options are ignored.
 			},
 			Pids: &specs.LinuxPids{
 				Limit: 0,
+			},
+			Network: &specs.LinuxNetwork{
+				DSCP: u32Ptr(0),
 			},
 		}
 
@@ -246,6 +257,10 @@ other options are ignored.
 				}
 			}
 			r.Pids.Limit = int64(context.Int("pids-limit"))
+			// config DSCP
+			if val := context.Int("dscp"); val != 0 {
+				r.Network.DSCP = u32Ptr(uint32(val))
+			}
 		}
 
 		// Update the value
@@ -263,6 +278,7 @@ other options are ignored.
 		config.Cgroups.Resources.MemoryReservation = *r.Memory.Reservation
 		config.Cgroups.Resources.MemorySwap = *r.Memory.Swap
 		config.Cgroups.Resources.PidsLimit = r.Pids.Limit
+		config.Cgroups.Resources.DSCP = *r.Network.DSCP
 
 		// Update Intel RDT
 		l3CacheSchema := context.String("l3-cache-schema")
