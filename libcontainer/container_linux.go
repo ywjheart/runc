@@ -263,13 +263,21 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		cmd := exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-F")
 		_ = cmd.Run()
 
-		cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", "0x12")
-		logrus.Debugf("path: %v", cmd.Path)
-		logrus.Debugf("arg: %v", cmd.Args)
-		err = cmd.Run()
-		if err != nil {
-			logrus.Debug("cmd.Run returned error: %v", err)
+		if config.Cgroups.Resources.DSCP != 0 {
+			dscp := config.Cgroups.Resources.DSCP
+
+			cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid),
+				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp",
+					fmt.Sprintf("%d", dscp))
+
+			logrus.Debugf("path: %v", cmd.Path)
+			logrus.Debugf("arg: %v", cmd.Args)
+			err = cmd.Run()
+			if err != nil {
+				logrus.Debug("cmd.Run returned error: %v", err)
+			}
 		}
+
 		syscall.Unmount(mp, syscall.MNT_DETACH)
 		os.RemoveAll(mp)
 	}
