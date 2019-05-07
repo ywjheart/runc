@@ -238,15 +238,13 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		7. rm /var/run/netns/<pid>
 		*/
 		pid := c.initProcess.pid()
-		logrus.Debugf("parent pid : %v", pid)
 		netnsroot := "/var/run/netns"
 		logrus.Debugf("netnsroot:%v", netnsroot)
 		src := fmt.Sprintf("/proc/%v/ns/net", pid)
-		logrus.Debugf("src:%v", src)
 		mp :=  netnsroot + fmt.Sprintf("/%v", pid)
 		err := os.MkdirAll(netnsroot, 0777)
 		if err != nil {
-			logrus.Debugf("mp:%v, MkdirAll err: %v", mp, err.Error())
+			logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
 		}
 		f,err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
 		if err != nil {
@@ -255,32 +253,28 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		f.Close()
 		defer os.RemoveAll(mp)
 
-		err = syscall.Mount(src,mp,"",syscall.MS_BIND,"")
+		err = syscall.Mount(src, mp, "", syscall.MS_BIND, "")
 		if err != nil {
 			return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
 		}
 		defer syscall.Unmount(mp, syscall.MNT_DETACH)
 
 		// flush before insert, ignore errors here
-		cmd := exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-F")
-		_ = cmd.Run()
+		cmd := exec.Command("ip", "netns", "exec", fmt.Sprintf("%v", pid), "iptables" ,"-t" ,"mangle", "-F")
+		cmd.Run()
 
 		if config.Cgroups.Resources.DSCP != 0 {
 			dscp := config.Cgroups.Resources.DSCP
 
 			cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid),
 				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp",
-					fmt.Sprintf("%d", dscp))
+				fmt.Sprintf("%d", dscp))
 
-			logrus.Debugf("path: %v", cmd.Path)
-			logrus.Debugf("arg: %v", cmd.Args)
-			err = cmd.Run()
-			if err != nil {
-				logrus.Debug("cmd.Run returned error: %v", err)
+			if err = cmd.Run(); err != nil {
+				logrus.Errorf("cmd.Run returned error: %v", err)
 			}
 		}
 	}
-
 	// After config setting succeed, update config and states
 	c.config = &config
 	_, err = c.updateState(nil)
