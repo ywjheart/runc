@@ -253,11 +253,13 @@ func (c *linuxContainer) Set(config configs.Config) error {
 			return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
 		}
 		f.Close()
+		defer os.RemoveAll(mp)
 
 		err = syscall.Mount(src,mp,"",syscall.MS_BIND,"")
 		if err != nil {
 			return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
 		}
+		defer syscall.Unmount(mp, syscall.MNT_DETACH)
 
 		// flush before insert, ignore errors here
 		cmd := exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid), "iptables" ,"-t" ,"mangle", "-F")
@@ -277,9 +279,6 @@ func (c *linuxContainer) Set(config configs.Config) error {
 				logrus.Debug("cmd.Run returned error: %v", err)
 			}
 		}
-
-		syscall.Unmount(mp, syscall.MNT_DETACH)
-		os.RemoveAll(mp)
 	}
 
 	// After config setting succeed, update config and states
