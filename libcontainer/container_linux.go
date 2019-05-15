@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall" // only for SysProcAttr and Signal
 	"time"
+	"bufio"
 
 	"github.com/cyphar/filepath-securejoin"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
@@ -225,7 +226,6 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		}
 	}
 
-	// update DSCP
 	if c.config.Namespaces.Contains(configs.NEWNET) {
 		/*
 			 noted by yew:
@@ -237,7 +237,7 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		6. umount /var/run/netns/<pid>
 		7. rm /var/run/netns/<pid>
 		*/
-		pid := c.initProcess.pid()
+		pid := fmt.Sprintf("%v", c.initProcess.pid())
 		netnsroot := "/var/run/netns"
 		logrus.Debugf("netnsroot:%v", netnsroot)
 		src := fmt.Sprintf("/proc/%v/ns/net", pid)
@@ -246,7 +246,7 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		if err != nil {
 			logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
 		}
-		f,err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
+		f, err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
 		if err != nil {
 			return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
 		}
@@ -259,19 +259,77 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		}
 		defer syscall.Unmount(mp, syscall.MNT_DETACH)
 
+		// update DSCP
 		// flush before insert, ignore errors here
-		cmd := exec.Command("ip", "netns", "exec", fmt.Sprintf("%v", pid), "iptables" ,"-t" ,"mangle", "-F")
-		cmd.Run()
+		exec.Command("ip", "netns", "exec", pid, "iptables" ,"-t" ,"mangle", "-F").Run()
 
 		if config.Cgroups.Resources.DSCP != 0 {
-			dscp := config.Cgroups.Resources.DSCP
+			dscp := fmt.Sprintf("%v", config.Cgroups.Resources.DSCP)
 
-			cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid),
-				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp",
-				fmt.Sprintf("%d", dscp))
+			cmd := exec.Command("ip" ,"netns", "exec", pid,
+				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", dscp)
 
 			if err = cmd.Run(); err != nil {
-				logrus.Errorf("cmd.Run returned error: %v", err)
+				logrus.Errorf("iptables -t mangle -A, returned error: %v", err)
+			}
+		}
+
+		// update bandwidth limitation
+		/*
+			1. get nic list
+			2. remove tc rules, ignore error
+			3. apply tc rules if any
+			e.g.:
+			step 1: get all local nic devices
+				ip netns exec 5880 ifconfig | grep
+			step 2: config tc for each device
+				ip netns exec 5880 tc qdisc delete dev eth0 root
+				ip netns exec 5880 tc qdisc add dev eth0 root bfifo limit 8000
+			note:
+				ip netns exec 5880 tc -s qdisc ls dev eth0
+		*/
+		stdout, err := exec.Command("ip", "netns", "exec", pid, "ifconfig").Output()
+		if err != nil {
+			// unlikely
+			logrus.Errorf("failed to execute ifconfig")
+		} else {
+			var niclist []string
+			scanner := bufio.NewScanner(bytes.NewBuffer(stdout))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.Contains(line, "encap:Ethernet") {
+					// ubuntu 16.04
+					fields := strings.Fields(line)
+					if len(fields) < 5 {
+						continue
+					}
+					niclist = append(niclist, fields[0])
+				}else if strings.Contains(line, "flags=") &&
+					strings.Contains(line, "UP") &&
+					!strings.Contains(line, "LOOPBACK"){
+					// ubuntu 18.04
+					fields := strings.Split(line,":")
+					if len(fields) < 2 {
+						continue
+					}
+					niclist = append(niclist, strings.Trim(fields[0]," "))
+				}
+			}
+			// execute tc after retrieved niclist
+			for _, nic := range niclist {
+				// usually it has one and only one result here
+				// remove existing rules if any
+				exec.Command("ip", "netns", "exec", pid, "tc", "qdisc", "delete", "dev", nic, "root").Run()
+
+				if config.Cgroups.Resources.Bandwidth != 0 {
+					bandwidth := fmt.Sprintf("%v", config.Cgroups.Resources.Bandwidth)
+
+					cmd := exec.Command("ip", "netns", "exec", pid,
+						"tc", "qdisc", "add", "dev", nic, "root", "bfifo", "limit", bandwidth)
+					if err = cmd.Run(); err != nil {
+						logrus.Errorf("tc qdisc add, returned error: %v", err)
+					}
+				}
 			}
 		}
 	}

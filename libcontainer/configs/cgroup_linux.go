@@ -122,4 +122,7 @@ type Resources struct {
 
 	// Set DSCP
 	DSCP uint32 `json:"dscp"`
+
+	// Set bandwidth
+	Bandwidth uint32 `json:"bandwidth"`
 }

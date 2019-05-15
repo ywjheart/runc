@@ -53,7 +53,8 @@ The accepted format is as follow (unchanged values can be omitted):
     "weight": 0
   },
   "network": {
-    "dscp" : 0
+    "dscp" : 0,
+    "bandwidth" : 0
   }
 }
 
@@ -130,6 +131,10 @@ other options are ignored.
 			Name:  "dscp",
 			Usage: "Specifies dscp value, default 0 to disable dscp tagging",
 		},
+		cli.UintFlag{
+			Name:  "bandwidth",
+			Usage: "Specifies bandwidth limitation, default 0 to disable bandwidth limitation",
+		},
 	},
 	Action: func(context *cli.Context) error {
 		if err := checkArgs(context, 1, exactArgs); err != nil {
@@ -165,6 +170,7 @@ other options are ignored.
 			},
 			Network: &specs.LinuxNetwork{
 				DSCP: u32Ptr(0),
+				Bandwidth: u32Ptr(0),
 			},
 		}
 
@@ -261,6 +267,10 @@ other options are ignored.
 			if val := context.Int("dscp"); val != 0 {
 				r.Network.DSCP = u32Ptr(uint32(val))
 			}
+			// config bandwidth
+			if val := context.Int("bandwidth"); val != 0 {
+				r.Network.Bandwidth = u32Ptr(uint32(val))
+			}
 		}
 
 		// Update the value
@@ -279,6 +289,7 @@ other options are ignored.
 		config.Cgroups.Resources.MemorySwap = *r.Memory.Swap
 		config.Cgroups.Resources.PidsLimit = r.Pids.Limit
 		config.Cgroups.Resources.DSCP = *r.Network.DSCP
+		config.Cgroups.Resources.Bandwidth = *r.Network.Bandwidth
 
 		// Update Intel RDT
 		l3CacheSchema := context.String("l3-cache-schema")

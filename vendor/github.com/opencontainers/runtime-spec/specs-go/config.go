@@ -324,6 +324,8 @@ type LinuxNetwork struct {
 	Priorities []LinuxInterfacePriority `json:"priorities,omitempty"`
 	// set dscp
 	DSCP *uint32 `json:"dscp,omitempty"`
+	// set bandwidth
+	Bandwidth *uint32 `json:"bandwidth,omitempty"`
 }
 
 // LinuxRdma for Linux cgroup 'rdma' resource management (Linux 4.11)
