@@ -226,117 +226,134 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		}
 	}
 
-	if c.config.Namespaces.Contains(configs.NEWNET) {
-		/*
-			 noted by yew:
-		1. get the parent process pid
-		2. mkdir -p /var/run/netns
-		3. touch /var/run/netns/<pid>
-		4. mount --bind /proc/<pid>/ns/net /var/run/netns/<pid>
-		5. ip netns exec <pid> iptables -t mangle -A OUTPUT -j DSCP --set-descp 0x12
-		6. umount /var/run/netns/<pid>
-		7. rm /var/run/netns/<pid>
-		*/
-		pid := fmt.Sprintf("%v", c.initProcess.pid())
-		netnsroot := "/var/run/netns"
-		logrus.Debugf("netnsroot:%v", netnsroot)
-		src := fmt.Sprintf("/proc/%v/ns/net", pid)
-		mp :=  netnsroot + fmt.Sprintf("/%v", pid)
-		err := os.MkdirAll(netnsroot, 0777)
-		if err != nil {
-			logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
-		}
-		f, err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
-		if err != nil {
-			return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
-		}
-		f.Close()
-		defer os.RemoveAll(mp)
-
-		err = syscall.Mount(src, mp, "", syscall.MS_BIND, "")
-		if err != nil {
-			return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
-		}
-		defer syscall.Unmount(mp, syscall.MNT_DETACH)
-
-		// update DSCP
-		// flush before insert, ignore errors here
-		exec.Command("ip", "netns", "exec", pid, "iptables" ,"-t" ,"mangle", "-F").Run()
-
-		if config.Cgroups.Resources.DSCP != 0 {
-			dscp := fmt.Sprintf("%v", config.Cgroups.Resources.DSCP)
-
-			cmd := exec.Command("ip" ,"netns", "exec", pid,
-				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", dscp)
-
-			if err = cmd.Run(); err != nil {
-				logrus.Errorf("iptables -t mangle -A, returned error: %v", err)
-			}
-		}
-
-		// update bandwidth limitation
-		/*
-			1. get nic list
-			2. remove tc rules, ignore error
-			3. apply tc rules if any
-			e.g.:
-			step 1: get all local nic devices
-				ip netns exec 5880 ifconfig | grep
-			step 2: config tc for each device
-				ip netns exec 5880 tc qdisc delete dev eth0 root
-				ip netns exec 5880 tc qdisc add dev eth0 root bfifo limit 8000
-			note:
-				ip netns exec 5880 tc -s qdisc ls dev eth0
-		*/
-		stdout, err := exec.Command("ip", "netns", "exec", pid, "ifconfig").Output()
-		if err != nil {
-			// unlikely
-			logrus.Errorf("failed to execute ifconfig")
-		} else {
-			var niclist []string
-			scanner := bufio.NewScanner(bytes.NewBuffer(stdout))
-			for scanner.Scan() {
-				line := scanner.Text()
-				if strings.Contains(line, "encap:Ethernet") {
-					// ubuntu 16.04
-					fields := strings.Fields(line)
-					if len(fields) < 5 {
-						continue
-					}
-					niclist = append(niclist, fields[0])
-				}else if strings.Contains(line, "flags=") &&
-					strings.Contains(line, "UP") &&
-					!strings.Contains(line, "LOOPBACK"){
-					// ubuntu 18.04
-					fields := strings.Split(line,":")
-					if len(fields) < 2 {
-						continue
-					}
-					niclist = append(niclist, strings.Trim(fields[0]," "))
-				}
-			}
-			// execute tc after retrieved niclist
-			for _, nic := range niclist {
-				// usually it has one and only one result here
-				// remove existing rules if any
-				exec.Command("ip", "netns", "exec", pid, "tc", "qdisc", "delete", "dev", nic, "root").Run()
-
-				if config.Cgroups.Resources.Bandwidth != 0 {
-					bandwidth := fmt.Sprintf("%v", config.Cgroups.Resources.Bandwidth)
-
-					cmd := exec.Command("ip", "netns", "exec", pid,
-						"tc", "qdisc", "add", "dev", nic, "root", "bfifo", "limit", bandwidth)
-					if err = cmd.Run(); err != nil {
-						logrus.Errorf("tc qdisc add, returned error: %v", err)
-					}
-				}
-			}
-		}
+	// apply network settings
+	if err = setNetLimits(&config, c.initProcess.pid()); err != nil {
+		return err
 	}
+
 	// After config setting succeed, update config and states
 	c.config = &config
 	_, err = c.updateState(nil)
 	return err
+}
+
+// added by yew: set dscp, tc
+func setNetLimits(config *configs.Config, parentpid int) error {
+	if !config.Namespaces.Contains(configs.NEWNET) {
+		return nil
+	}
+	/*
+		 noted by yew:
+	1. get the parent process pid
+	2. mkdir -p /var/run/netns
+	3. touch /var/run/netns/<pid>
+	4. mount --bind /proc/<pid>/ns/net /var/run/netns/<pid>
+	5. ip netns exec <pid> iptables -t mangle -A OUTPUT -j DSCP --set-descp 0x12
+	6. umount /var/run/netns/<pid>
+	7. rm /var/run/netns/<pid>
+	*/
+	pid := fmt.Sprintf("%v", parentpid)
+	netnsroot := "/var/run/netns"
+	src := fmt.Sprintf("/proc/%v/ns/net", pid)
+	mp :=  netnsroot + fmt.Sprintf("/%v", pid)
+	err := os.MkdirAll(netnsroot, 0777)
+	if err != nil {
+		logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
+	}
+	f, err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
+	if err != nil {
+		logrus.Errorf("failed to create: %v", mp)
+		return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
+	}
+	f.Close()
+	defer os.RemoveAll(mp)
+
+	err = syscall.Mount(src, mp, "", syscall.MS_BIND, "")
+	if err != nil {
+		logrus.Errorf("failed to mount: %v", mp)
+		return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
+	}
+	defer syscall.Unmount(mp, syscall.MNT_DETACH)
+
+	// update DSCP
+	// flush before insert, ignore errors here
+	exec.Command("ip", "netns", "exec", pid, "iptables" ,"-t" ,"mangle", "-F").Run()
+
+	if config.Cgroups.Resources.DSCP != 0 {
+		dscp := fmt.Sprintf("%v", config.Cgroups.Resources.DSCP)
+
+		cmd := exec.Command("ip" ,"netns", "exec", pid,
+			"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", dscp)
+
+		if err = cmd.Run(); err != nil {
+			logrus.Errorf("iptables -t mangle -A, returned error: %v", err)
+		}
+	} else {
+		logrus.Debugf("no DSCP set")
+	}
+
+	// update bandwidth limitation
+	/*
+		1. get nic list
+		2. remove tc rules, ignore error
+		3. apply tc rules if any
+		e.g.:
+		step 1: get all local nic devices
+			ip netns exec 5880 ifconfig | grep
+		step 2: config tc for each device
+			ip netns exec 5880 tc qdisc delete dev eth0 root
+			ip netns exec 5880 tc qdisc add dev eth0 root bfifo limit 8000
+		note:
+			ip netns exec 5880 tc -s qdisc ls dev eth0
+	*/
+	stdout, err := exec.Command("ip", "netns", "exec", pid, "ifconfig").Output()
+	if err != nil {
+		// unlikely
+		logrus.Errorf("failed to execute ifconfig")
+		return err
+	}
+
+	var niclist []string
+	scanner := bufio.NewScanner(bytes.NewBuffer(stdout))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "encap:Ethernet") {
+			// ubuntu 16.04
+			fields := strings.Fields(line)
+			if len(fields) < 5 {
+				continue
+			}
+			niclist = append(niclist, fields[0])
+		}else if strings.Contains(line, "flags=") &&
+			strings.Contains(line, "UP") &&
+			!strings.Contains(line, "LOOPBACK"){
+			// ubuntu 18.04
+			fields := strings.Split(line,":")
+			if len(fields) < 2 {
+				continue
+			}
+			niclist = append(niclist, strings.Trim(fields[0]," "))
+		}
+	}
+	// execute tc after retrieved niclist
+	for _, nic := range niclist {
+		// usually it has one and only one result here
+		// remove existing rules if any
+		exec.Command("ip", "netns", "exec", pid, "tc", "qdisc", "delete", "dev", nic, "root").Run()
+
+		if config.Cgroups.Resources.Bandwidth != 0 {
+			bandwidth := fmt.Sprintf("%v", config.Cgroups.Resources.Bandwidth)
+
+			cmd := exec.Command("ip", "netns", "exec", pid,
+				"tc", "qdisc", "add", "dev", nic, "root", "bfifo", "limit", bandwidth)
+			if err = cmd.Run(); err != nil {
+				logrus.Errorf("tc qdisc add, returned error: %v", err)
+			}
+		} else {
+			logrus.Debugf("no Bandwidth set")
+		}
+	}
+	return nil
 }
 
 func (c *linuxContainer) Start(process *Process) error {

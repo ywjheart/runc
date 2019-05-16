@@ -491,6 +491,12 @@ func createCgroupConfig(opts *CreateOpts) (*configs.Cgroup, error) {
 					Priority:  int64(m.Priority),
 				})
 			}
+			if r.Network.DSCP != nil {
+				c.Resources.DSCP = *r.Network.DSCP
+			}
+			if r.Network.Bandwidth != nil {
+				c.Resources.Bandwidth = *r.Network.Bandwidth
+			}
 		}
 	}
 	// append the default allowed devices to the end of the list
