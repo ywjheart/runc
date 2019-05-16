@@ -225,60 +225,72 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		}
 	}
 
-	// update DSCP
-	if c.config.Namespaces.Contains(configs.NEWNET) {
-		/*
-			 noted by yew:
-		1. get the parent process pid
-		2. mkdir -p /var/run/netns
-		3. touch /var/run/netns/<pid>
-		4. mount --bind /proc/<pid>/ns/net /var/run/netns/<pid>
-		5. ip netns exec <pid> iptables -t mangle -A OUTPUT -j DSCP --set-descp 0x12
-		6. umount /var/run/netns/<pid>
-		7. rm /var/run/netns/<pid>
-		*/
-		pid := c.initProcess.pid()
-		netnsroot := "/var/run/netns"
-		logrus.Debugf("netnsroot:%v", netnsroot)
-		src := fmt.Sprintf("/proc/%v/ns/net", pid)
-		mp :=  netnsroot + fmt.Sprintf("/%v", pid)
-		err := os.MkdirAll(netnsroot, 0777)
-		if err != nil {
-			logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
-		}
-		f,err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
-		if err != nil {
-			return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
-		}
-		f.Close()
-		defer os.RemoveAll(mp)
-
-		err = syscall.Mount(src, mp, "", syscall.MS_BIND, "")
-		if err != nil {
-			return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
-		}
-		defer syscall.Unmount(mp, syscall.MNT_DETACH)
-
-		// flush before insert, ignore errors here
-		cmd := exec.Command("ip", "netns", "exec", fmt.Sprintf("%v", pid), "iptables" ,"-t" ,"mangle", "-F")
-		cmd.Run()
-
-		if config.Cgroups.Resources.DSCP != 0 {
-			dscp := config.Cgroups.Resources.DSCP
-
-			cmd = exec.Command("ip" ,"netns", "exec", fmt.Sprintf("%v",pid),
-				"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp",
-				fmt.Sprintf("%d", dscp))
-
-			if err = cmd.Run(); err != nil {
-				logrus.Errorf("cmd.Run returned error: %v", err)
-			}
-		}
+	// apply network settings
+	if err = setNetLimits(&config, c.initProcess.pid()); err != nil {
+		return err
 	}
+
 	// After config setting succeed, update config and states
 	c.config = &config
 	_, err = c.updateState(nil)
 	return err
+}
+
+// added by yew: set dscp, tc
+func setNetLimits(config *configs.Config, parentpid int) error {
+	if !config.Namespaces.Contains(configs.NEWNET) {
+		return nil
+	}
+	/*
+		 noted by yew:
+	1. get the parent process pid
+	2. mkdir -p /var/run/netns
+	3. touch /var/run/netns/<pid>
+	4. mount --bind /proc/<pid>/ns/net /var/run/netns/<pid>
+	5. ip netns exec <pid> iptables -t mangle -A OUTPUT -j DSCP --set-descp 0x12
+	6. umount /var/run/netns/<pid>
+	7. rm /var/run/netns/<pid>
+	*/
+	pid := fmt.Sprintf("%v", parentpid)
+	netnsroot := "/var/run/netns"
+	src := fmt.Sprintf("/proc/%v/ns/net", pid)
+	mp :=  netnsroot + fmt.Sprintf("/%v", pid)
+	err := os.MkdirAll(netnsroot, 0777)
+	if err != nil {
+		logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
+	}
+	f, err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
+	if err != nil {
+		logrus.Errorf("failed to create: %v", mp)
+		return newGenericError(fmt.Errorf("unable to create %s, err: %v", mp, err.Error()), SystemError)
+	}
+	f.Close()
+	defer os.RemoveAll(mp)
+
+	err = syscall.Mount(src, mp, "", syscall.MS_BIND, "")
+	if err != nil {
+		logrus.Errorf("failed to mount: %v", mp)
+		return newGenericError(fmt.Errorf("unable to mount %s, err: %v", mp, err.Error()), SystemError)
+	}
+	defer syscall.Unmount(mp, syscall.MNT_DETACH)
+
+	// update DSCP
+	// flush before insert, ignore errors here
+	exec.Command("ip", "netns", "exec", pid, "iptables" ,"-t" ,"mangle", "-F").Run()
+
+	if config.Cgroups.Resources.DSCP != 0 {
+		dscp := fmt.Sprintf("%v", config.Cgroups.Resources.DSCP)
+
+		cmd := exec.Command("ip" ,"netns", "exec", pid,
+			"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", dscp)
+
+		if err = cmd.Run(); err != nil {
+			logrus.Errorf("iptables -t mangle -A, returned error: %v", err)
+		}
+	} else {
+		logrus.Debugf("no DSCP set")
+	}
+	return nil
 }
 
 func (c *linuxContainer) Start(process *Process) error {

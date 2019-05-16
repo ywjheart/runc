@@ -352,6 +352,10 @@ func (p *initProcess) start() error {
 			if err := setupRlimits(p.config.Rlimits, p.pid()); err != nil {
 				return newSystemErrorWithCause(err, "setting rlimits for ready process")
 			}
+			// apply network settings
+			if err = setNetLimits(p.config.Config, p.pid()); err != nil {
+				return newSystemErrorWithCause(err, "apply network settings for ready process")
+			}
 			// call prestart hooks
 			if !p.config.Config.Namespaces.Contains(configs.NEWNS) {
 				// Setup cgroup before prestart hook, so that the prestart hook could apply cgroup permissions.
