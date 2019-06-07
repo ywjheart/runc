@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall" // only for SysProcAttr and Signal
 	"time"
+	"path"
 	"bufio"
 
 	"github.com/cyphar/filepath-securejoin"
@@ -254,10 +255,9 @@ func setNetLimits(config *configs.Config, parentpid int) error {
 	*/
 	pid := fmt.Sprintf("%v", parentpid)
 	netnsroot := "/var/run/netns"
-	src := fmt.Sprintf("/proc/%v/ns/net", pid)
-	mp :=  netnsroot + fmt.Sprintf("/%v", pid)
-	err := os.MkdirAll(netnsroot, 0777)
-	if err != nil {
+	src := path.Join("/proc", pid, "ns/net")
+	mp := path.Join(netnsroot, pid)
+	if err := os.MkdirAll(netnsroot, 0777); err != nil {
 		logrus.Errorf("mp:%v, MkdirAll err: %v", mp, err.Error())
 	}
 	f, err := os.OpenFile(mp, os.O_RDONLY|os.O_CREATE, 0666)
@@ -286,7 +286,7 @@ func setNetLimits(config *configs.Config, parentpid int) error {
 			"iptables" ,"-t" ,"mangle", "-A", "OUTPUT" , "-j", "DSCP", "--set-dscp", dscp)
 
 		if err = cmd.Run(); err != nil {
-			logrus.Errorf("iptables -t mangle -A, returned error: %v", err)
+			return newGenericError(fmt.Errorf("iptables -t mangle -A, returned error: %v", err.Error()), SystemError)
 		}
 	} else {
 		logrus.Debugf("no DSCP set")
@@ -302,7 +302,7 @@ func setNetLimits(config *configs.Config, parentpid int) error {
 			ip netns exec 5880 ifconfig | grep
 		step 2: config tc for each device
 			ip netns exec 5880 tc qdisc delete dev eth0 root
-			ip netns exec 5880 tc qdisc add dev eth0 root bfifo limit 8000
+			ip netns exec 5880 tc qdisc add dev eth0 root tbf burst 1m latency 10  mtu 1514 rate 512bps
 		note:
 			ip netns exec 5880 tc -s qdisc ls dev eth0
 	*/
@@ -339,15 +339,19 @@ func setNetLimits(config *configs.Config, parentpid int) error {
 	for _, nic := range niclist {
 		// usually it has one and only one result here
 		// remove existing rules if any
+
+		// we need to flush existing rules if any
 		exec.Command("ip", "netns", "exec", pid, "tc", "qdisc", "delete", "dev", nic, "root").Run()
 
+		// continue to apply new rules if it is non-zero
+		// refer to https://linux.die.net/man/8/tc-tbf
 		if config.Cgroups.Resources.Bandwidth != 0 {
-			bandwidth := fmt.Sprintf("%v", config.Cgroups.Resources.Bandwidth)
+			bandwidth := fmt.Sprintf("%vbps", config.Cgroups.Resources.Bandwidth)
 
 			cmd := exec.Command("ip", "netns", "exec", pid,
-				"tc", "qdisc", "add", "dev", nic, "root", "bfifo", "limit", bandwidth)
+				"tc", "qdisc", "add", "dev", nic, "root", "tbf", "burst", "1m", "latency", "10", "mtu", "1500", "rate", bandwidth)
 			if err = cmd.Run(); err != nil {
-				logrus.Errorf("tc qdisc add, returned error: %v", err)
+				return newGenericError(fmt.Errorf("tc qdisc add, returned error: %v", err.Error()), SystemError)
 			}
 		} else {
 			logrus.Debugf("no Bandwidth set")

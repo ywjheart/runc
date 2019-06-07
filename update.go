@@ -133,7 +133,7 @@ other options are ignored.
 		},
 		cli.UintFlag{
 			Name:  "bandwidth",
-			Usage: "Specifies bandwidth limitation, default 0 to disable bandwidth limitation",
+			Usage: "Specifies bandwidth limitation, bytes per second, default 0 to disable bandwidth limitation",
 		},
 	},
 	Action: func(context *cli.Context) error {
